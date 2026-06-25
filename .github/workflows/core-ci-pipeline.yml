@@ -1,0 +1,70 @@
+name: YAS Core CI Pipeline
+
+on:
+  push:
+    branches:
+      - '**'
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          java-version: '21'
+          distribution: 'temurin'
+          cache: 'maven'
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Detect Changes, Test and Build
+        run: |
+          # Xác định danh sách các file thay đổi
+          if [ "${{ github.event.before }}" = "0000000000000000000000000000000000000000" ]; then
+            CHANGED_FILES=$(git ls-files)
+          else
+            CHANGED_FILES=$(git diff --name-only HEAD^ HEAD || git diff --name-only HEAD)
+          fi
+          echo "Các file đã thay đổi: $CHANGED_FILES"
+
+          # Lấy 7 ký tự đầu của Commit ID làm Tag
+          COMMIT_ID=$(echo ${GITHUB_SHA} | cut -c1-7)
+          echo "Tag Image: $COMMIT_ID"
+
+          # 1. Nhóm các service Java/Spring Boot (Bắt buộc build qua Maven)
+          MAVEN_SERVICES="product cart order customer inventory tax media search storefront-bff backoffice-bff"
+
+          for SERVICE in $MAVEN_SERVICES; do
+            if echo "$CHANGED_FILES" | grep -q "^$SERVICE/"; then
+              echo "--- Bắt đầu xử lý Java Service: $SERVICE ---"
+              
+              # Chạy test và ép mức độ test coverage đạt chuẩn 70%
+              mvn clean verify -pl $SERVICE -am -Djacoco.rules.overall.minimum=0.70
+              
+              # Build và Push Docker Image
+              docker build -t ${{ secrets.DOCKERHUB_USERNAME }}/yas-$SERVICE:$COMMIT_ID ./$SERVICE
+              docker push ${{ secrets.DOCKERHUB_USERNAME }}/yas-$SERVICE:$COMMIT_ID
+            fi
+          done
+
+          # 2. Nhóm các service tiện ích (Chỉ đóng gói Dockerfile)
+          OTHER_SERVICES="identity swagger-ui sampledata"
+
+          for SERVICE in $OTHER_SERVICES; do
+            if echo "$CHANGED_FILES" | grep -q "^$SERVICE/"; then
+              echo "--- Bắt đầu xử lý Utility Service: $SERVICE ---"
+              docker build -t ${{ secrets.DOCKERHUB_USERNAME }}/yas-$SERVICE:$COMMIT_ID ./$SERVICE
+              docker push ${{ secrets.DOCKERHUB_USERNAME }}/yas-$SERVICE:$COMMIT_ID
+            fi
+          done
