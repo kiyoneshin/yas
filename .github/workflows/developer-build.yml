@@ -60,7 +60,7 @@ jobs:
           
           # Đọc các tham số đầu vào từ lập trình viên
           SERVICE="${{ github.event.inputs.target_service }}"
-          BRANCH_TAG="${{ id.get_tag.outputs.tag }}"
+          BRANCH_TAG="${{ steps.get_tag.outputs.tag }}"
           
           echo "--- Cập nhật cấu hình GitOps ---"
           echo "Service yêu cầu thử nghiệm: $SERVICE -> Chuyển tag thành: $BRANCH_TAG"
