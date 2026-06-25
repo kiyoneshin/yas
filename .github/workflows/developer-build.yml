@@ -1,0 +1,99 @@
+name: Developer Build (Basic CD)
+
+# Kích hoạt tính năng workflow_dispatch để tạo giao diện nút bấm và nhập tham số bằng tay
+on:
+  workflow_dispatch:
+    inputs:
+      target_service:
+        description: 'Chọn Service mà bạn muốn deploy thử nghiệm'
+        required: true
+        default: 'tax'
+        type: choice
+        options:
+          - product
+          - cart
+          - order
+          - customer
+          - inventory
+          - tax
+          - media
+          - search
+          - storefront-bff
+          - backoffice-bff
+      feature_branch:
+        description: 'Nhập chính xác tên Feature Branch chứa code thay đổi (Các service khác sẽ lấy tag: main)'
+        required: true
+        default: 'dev_tax_service'
+        type: string
+
+jobs:
+  deploy-trigger:
+    runs-on: ubuntu-latest
+
+    steps:
+      # Bước 1: Kéo mã nguồn của nhánh được chỉ định về để lấy Commit ID mới nhất
+      - name: Checkout Feature Code
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.feature_branch }}
+
+      # Bước 2: Lấy Commit ID (7 ký tự) của nhánh tính năng
+      - name: Get Short Commit ID
+        id: get_tag
+        run: |
+          SHORT_SHA=$(git rev-parse --short HEAD)
+          echo "tag=$SHORT_SHA" >> $GITHUB_OUTPUT
+          echo "Mã hóa Tag ứng với nhánh tính năng là: $SHORT_SHA"
+
+      # Bước 3: Kéo Repo cấu hình (yas-manifests) về môi trường chạy tạm thời
+      - name: Checkout Manifest Repository
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ github.actor }}/yas-manifests
+          token: ${{ secrets.MANIFEST_REPO_TOKEN }}
+          path: manifest-repo
+
+      # Bước 4: Chạy script tự động cập nhật tag vào file values.yaml GitOps
+      - name: Overwrite Image Tag in Manifest
+        run: |
+          cd manifest-repo/dev
+          
+          # Đọc các tham số đầu vào từ lập trình viên
+          SERVICE="${{ github.event.inputs.target_service }}"
+          BRANCH_TAG="${{ id.get_tag.outputs.tag }}"
+          
+          echo "--- Cập nhật cấu hình GitOps ---"
+          echo "Service yêu cầu thử nghiệm: $SERVICE -> Chuyển tag thành: $BRANCH_TAG"
+          
+          # Thực hiện ghi đè tag động vào file values.yaml của môi trường dev
+          # Script này tự động sửa hoặc thêm mới dòng cấu hình tag cho đúng service được chọn
+          if grep -q "${SERVICE}_tag:" values.yaml; then
+            sed -i "s/${SERVICE}_tag:.*/${SERVICE}_tag: \"$BRANCH_TAG\"/g" values.yaml
+          else
+            echo "${SERVICE}_tag: \"$BRANCH_TAG\"" >> values.yaml
+          fi
+          
+          # Đặt tất cả các service còn lại về mặc định là tag 'main' hoặc 'latest' theo đề bài
+          ALL_SERVICES="product cart order customer inventory tax media search storefront-bff backoffice-bff"
+          for S in $ALL_SERVICES; do
+            if [ "$S" != "$SERVICE" ]; then
+              if grep -q "${S}_tag:" values.yaml; then
+                sed -i "s/${S}_tag:.*/${S}_tag: \"main\"/g" values.yaml
+              else
+                echo "${S}_tag: \"main\"" >> values.yaml
+              fi
+            fi
+          done
+          
+          echo "Nội dung cấu hình GitOps sau khi cập nhật động:"
+          cat values.yaml
+
+      # Bước 5: Tự động Commit thay đổi và đẩy ngược lên repo yas-manifests
+      - name: Commit and Push to Manifest Repo
+        run: |
+          cd manifest-repo
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          git add .
+          git commit -m "cd: developer trigger deployment for service ${{ github.event.inputs.target_service }} using branch ${{ github.event.inputs.feature_branch }}" || echo "Không có thay đổi cấu hình nào."
+          git push origin main
